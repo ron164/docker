@@ -4,10 +4,17 @@
 # @Author : rohan.ijare
 """
 from typing import Optional
-from fastapi import FastAPI, Response, status, HTTPException
-from fastapi.params import Body
+from fastapi import FastAPI, Response, status, HTTPException, Depends
+# from fastapi.params import Body
 from pydantic import BaseModel
 import uvicorn
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from . import model
+from .database import engine, get_db
+from sqlalchemy.orm import Session
+
+model.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
@@ -15,15 +22,32 @@ app = FastAPI()
 class Post(BaseModel):
     title: str
     content: str
-    publish: bool = True
+    published: Optional[bool] = True
     rating: Optional[int] = None
 
 
-# temporary database
+# establish connection to database
+while True:
+    try:
+        conn = psycopg2.connect(host='localhost', database='fastapi', user='postgres', password='12345',
+                                cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
+        print("DB connection was successfully!")
+        break
+    except Exception as error:
+        print("Connecting to DB failed!")
+        print("Error: ", error)
+
+    # temporary database
 my_posts = [{"title": "T1", "content": "content for T1", "id": 1},
             {"title": "T2", "content": "content for T2", "id": 2},
             {"title": "T3", "content": "content for T3", "id": 3},
             {"title": "T4", "content": "content for T4", "id": 4}]
+
+
+@app.get("/sqlalchemy")
+def test_posts(db: Session = Depends(get_db)):
+    return {"status": "success"}
 
 
 @app.get("/")
@@ -33,7 +57,22 @@ def root():
 
 @app.get("/posts")
 def get_posts():
-    return {"data": my_posts}
+    cursor.execute(""" SELECT * FROM post """)
+    posts = cursor.fetchall()
+    # print(posts)
+    return {"data": posts}
+
+
+@app.post("/posts", status_code=status.HTTP_201_CREATED)
+def create_posts(post: Post):
+    print("1")
+    cursor.execute("""INSERT INTO post (title, content, published) VALUES (%s, %s, %s) RETURNING * """,
+                   (post.title, post.content,
+                    post.published))
+    new_post = cursor.fetchone()
+    conn.commit()
+
+    return {'data': new_post}
 
 
 @app.post("/posts")
@@ -49,7 +88,10 @@ def find_post(id):
 
 @app.get("/posts/{id}")
 def get_posts(id: int, response: Response):  # pydantic validation
-    post = find_post(id)
+    cursor.execute("""SELECT * from post WHERE id = %s""", (str(id)))
+    post = cursor.fetchone()
+    # print(post)
+    # post = find_post(id)
     if not post:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"post with id : {id} was not found")
         # response.status_code = status.HTTP_404_NOT_FOUND
@@ -65,19 +107,27 @@ def find_index(id):
 
 @app.delete("/posts/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_post(id: int):
-    index = find_index(id)
-    if index is None:
+    cursor.execute("""DELETE from post WHERE id = %s""", str(id))
+    deleted_post = cursor.fetchone()
+    conn.commit()
+    # index = find_index(id)
+    if deleted_post is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"post with id : {id} was not found")
-    my_posts.pop(index)
+    #  my_posts.pop(deleted_post)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.put("/posts/{id}")
 def update_post(id: int, post: Post):
-    index = find_index(id)
-    if index is None:
+    cursor.execute("""UPDATE post SET title = %s", content=%s, published = %s WHERE id = %s RETURNING *""",
+                   (post.title, post.content, post.published, str(id)))
+    updated_post = cursor.fetchone()
+    conn.commit()
+    # index = find_index(id)
+    if updated_post is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"post with id : {id} was not exists")
-    post_dict = post.dict()
-    post_dict['id'] = id
-    my_posts[index] = post_dict
-    return {'data': post_dict}
+
+    # post_dict = post.dict()
+    # post_dict['id'] = id
+    # my_posts[updated_post] = post_dict
+    return {'data': updated_post}
